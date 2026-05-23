@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from "recharts";
 import { Users, AlertCircle, Plus, Edit3, LogOut, Home, FileText, Search, ArrowLeft, Save, Utensils, Scale, Zap, Droplets, Activity, ChevronRight, User, Eye, EyeOff, Award, AlertTriangle, X, Check, Lock, Camera, Pill, Trash2, BarChart2, TrendingUp, TrendingDown, GitCompare, Share2, Mail, Printer, Copy, CheckCircle } from "lucide-react";
 
@@ -573,6 +573,7 @@ const NAV={
   player:[["pp","My Profile",User],["nutr","Nutrition",Utensils],["stg","Settings",BarChart2]],
 };
 const RC={admin:"#DC143C",nutritionist:"#3B82F6",coach:"#10B981",player:"#F59E0B"};
+const ROLE_C = RC;
 
 const CSS=`
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=DM+Sans:wght@400;500;600&display=swap');
@@ -898,6 +899,96 @@ const ShareMod=({onClose,onPrint,onWA,onMail,onCopy,onNative,cp})=>{
   );
 };
 
+
+// ── TOAST NOTIFICATIONS ───────────────────────────────────────
+const ToastCtx = React.createContext(null);
+const useToast = () => React.useContext(ToastCtx);
+
+const ToastProvider = ({children}) => {
+  const [toasts, setToasts] = useState([]);
+  const add = (msg, type="success", dur=3000) => {
+    const id = Date.now();
+    setToasts(t => [...t, {id, msg, type}]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), dur);
+  };
+  const toast = {
+    success: (m) => add(m, "success"),
+    error:   (m) => add(m, "error", 4000),
+    info:    (m) => add(m, "info"),
+    warn:    (m) => add(m, "warn", 4000),
+  };
+  const icons = {success:"✅", error:"❌", info:"ℹ️", warn:"⚠️"};
+  const colors = {
+    success:{bg:"rgba(16,185,129,.95)",border:"#10B981"},
+    error:  {bg:"rgba(220,20,60,.95)",border:"#DC143C"},
+    info:   {bg:"rgba(59,130,246,.95)",border:"#3B82F6"},
+    warn:   {bg:"rgba(245,158,11,.95)",border:"#F59E0B"},
+  };
+  return (
+    <ToastCtx.Provider value={toast}>
+      {children}
+      <div style={{position:"fixed",bottom:76,right:14,zIndex:9999,display:"flex",flexDirection:"column",gap:8,maxWidth:320}}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            background:colors[t.type].bg,
+            border:`1px solid ${colors[t.type].border}`,
+            borderRadius:12,padding:"11px 16px",color:"#fff",
+            fontSize:".84rem",fontWeight:600,
+            display:"flex",alignItems:"center",gap:10,
+            boxShadow:"0 4px 20px rgba(0,0,0,.25)",
+            animation:"fi .25s ease"
+          }}>
+            <span style={{fontSize:"1rem"}}>{icons[t.type]}</span>
+            <span style={{flex:1,lineHeight:1.4}}>{t.msg}</span>
+            <button onClick={()=>setToasts(ts=>ts.filter(x=>x.id!==t.id))}
+              style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,.8)",fontSize:16,padding:0,lineHeight:1}}>×</button>
+          </div>
+        ))}
+      </div>
+    </ToastCtx.Provider>
+  );
+};
+
+// ── CONFIRM DIALOG ────────────────────────────────────────────
+const ConfirmDialog = ({msg, detail, onConfirm, onCancel, confirmLabel="Delete", confirmColor="#EF4444"}) => (
+  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 16px"}}
+    onClick={onCancel}>
+    <div className="card" style={{padding:24,maxWidth:380,width:"100%"}} onClick={e=>e.stopPropagation()}>
+      <div style={{fontSize:"1.5rem",textAlign:"center",marginBottom:10}}>⚠️</div>
+      <h3 className="hd2" style={{fontSize:"1.15rem",fontWeight:700,textAlign:"center",marginBottom:8}}>{msg}</h3>
+      {detail&&<p style={{fontSize:".82rem",color:"var(--mt)",textAlign:"center",marginBottom:18,lineHeight:1.5}}>{detail}</p>}
+      <div style={{display:"flex",gap:10,marginTop:16}}>
+        <button className="btn btg" onClick={onCancel} style={{flex:1}}>Cancel</button>
+        <button onClick={onConfirm} style={{flex:1,padding:"9px",borderRadius:10,border:"none",cursor:"pointer",
+          background:confirmColor,color:"#fff",fontFamily:"Rajdhani,sans-serif",fontWeight:700,fontSize:".9rem"}}>
+          {confirmLabel}
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+// ── ERROR BOUNDARY ────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props){super(props);this.state={error:null};}
+  static getDerivedStateFromError(e){return{error:e};}
+  render(){
+    if(this.state.error){
+      return(
+        <div style={{padding:40,textAlign:"center",maxWidth:480,margin:"0 auto"}}>
+          <div style={{fontSize:"3rem",marginBottom:14}}>⚠️</div>
+          <h2 className="hd2" style={{fontSize:"1.4rem",fontWeight:700,marginBottom:8,color:"var(--pr)"}}>Something went wrong</h2>
+          <p style={{color:"var(--mt)",fontSize:".85rem",marginBottom:20,lineHeight:1.6}}>
+            {this.state.error?.message||"An unexpected error occurred."}
+          </p>
+          <button className="btn btr" onClick={()=>this.setState({error:null})}>Try Again</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── LOGIN ─────────────────────────────────────────────────────
 const Login=({onLogin,extra,onSignUp,onUpdatePassword})=>{
   const[tab,setTab]=useState("login");
@@ -913,7 +1004,7 @@ const Login=({onLogin,extra,onSignUp,onUpdatePassword})=>{
   const[forgotNewPw2,setForgotNewPw2]=useState("");
 
   const doForgotStep1=()=>{
-    const found=all().find(u=>u.username===forgotUname.trim()||u.email===forgotUname.trim());
+    const found = getAllUsers().find(u => u.username === forgotUname.trim() || u.email === forgotUname.trim());
     if(!found)return setErr("Username or email not found.");
     if(!found.secQuestion)return setErr("No security question set. Contact admin to reset your password.");
     setForgotUser(found);setForgotStep(2);setErr("");
@@ -1180,7 +1271,7 @@ const Comp=({players,setView,setSel})=>{
           <div><label style={{display:"block",fontSize:".72rem",color:"var(--mt)",marginBottom:5,fontWeight:600,letterSpacing:.5}}>📅 DATE A — BEFORE</label>
             <select className="inp" style={{borderColor:dA?"#3B82F6":"var(--bd)"}} value={dA} onChange={e=>setDA(e.target.value)} disabled={!pl}>
               <option value="">— Select date —</option>
-              {pl?.measurements.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=><option key={m.date} value={m.date}>{m.date} · {m.weight}kg / {m.bodyFat}%BF</option>)}
+              {[...(pl?.measurements||[])].sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=><option key={m.date} value={m.date}>{m.date} · {m.weight}kg / {m.bodyFat}%BF</option>)}
             </select>
           </div>
           <div><label style={{display:"block",fontSize:".72rem",color:"var(--mt)",marginBottom:5,fontWeight:600,letterSpacing:.5}}>📅 DATE B — AFTER</label>
@@ -1192,7 +1283,7 @@ const Comp=({players,setView,setSel})=>{
         </div>
       </div>
       {!pl&&<div className="card" style={{padding:60,textAlign:"center"}}><GitCompare size={44} color="var(--dm)" style={{margin:"0 auto 14px",display:"block"}}/><h3 className="hd2" style={{fontSize:"1.2rem",marginBottom:6}}>Select a player to compare</h3><p style={{color:"var(--mt)"}}>Choose a player and two dates for before/after analysis.</p></div>}
-      {pl&&(!dA||!dB)&&<div className="card" style={{padding:24}}><div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}><Av p={pl} sz={52} fs="1.1rem"/><div><h3 className="hd2" style={{fontSize:"1.4rem",fontWeight:700}}>{pl.name}</h3><p style={{color:"var(--mt)",fontSize:".83rem"}}>{pl.position} · {pl.measurements.length} measurements recorded</p></div></div><p style={{color:"var(--mt)",marginBottom:12}}>Select <b style={{color:"#3B82F6"}}>Date A (Before)</b> and <b style={{color:"#10B981"}}>Date B (After)</b>.</p><div style={{display:"flex",flexWrap:"wrap",gap:8}}>{pl.measurements.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=><span key={m.date} style={{padding:"5px 12px",background:"rgba(255,255,255,.05)",border:"1px solid var(--bd)",borderRadius:20,fontSize:".78rem",color:"var(--mt)"}}>{m.date} · {m.weight}kg</span>)}</div></div>}
+      {pl&&(!dA||!dB)&&<div className="card" style={{padding:24}}><div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}><Av p={pl} sz={52} fs="1.1rem"/><div><h3 className="hd2" style={{fontSize:"1.4rem",fontWeight:700}}>{pl.name}</h3><p style={{color:"var(--mt)",fontSize:".83rem"}}>{pl.position} · {pl.measurements.length} measurements recorded</p></div></div><p style={{color:"var(--mt)",marginBottom:12}}>Select <b style={{color:"#3B82F6"}}>Date A (Before)</b> and <b style={{color:"#10B981"}}>Date B (After)</b>.</p><div style={{display:"flex",flexWrap:"wrap",gap:8}}>{[...pl.measurements].sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=><span key={m.date} style={{padding:"5px 12px",background:"rgba(255,255,255,.05)",border:"1px solid var(--bd)",borderRadius:20,fontSize:".78rem",color:"var(--mt)"}}>{m.date} · {m.weight}kg</span>)}</div></div>}
       {mA&&mB&&(<>
         <div style={{display:"flex",alignItems:"center",gap:13,marginBottom:18,flexWrap:"wrap"}}>
           <Av p={pl} sz={50} fs="1.05rem"/>
@@ -1235,7 +1326,7 @@ const Comp=({players,setView,setSel})=>{
         </div>
         <div className="card" style={{padding:18,marginBottom:18}}>
           <p className="hd2" style={{fontSize:"1.05rem",fontWeight:600,marginBottom:14}}>Full Measurement Timeline</p>
-          <ResponsiveContainer width="100%" height={195}><LineChart data={pl.measurements.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=>({date:m.date.slice(5),wt:m.weight,ln:leanMass(m.weight,m.bodyFat),bf:m.bodyFat,isA:m.date===dA,isB:m.date===dB}))}><CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA"/><XAxis dataKey="date" tick={{fill:"#8E8E93",fontSize:11}} axisLine={false} tickLine={false}/><YAxis tick={{fill:"#8E8E93",fontSize:11}} axisLine={false} tickLine={false} domain={["auto","auto"]}/><Tooltip contentStyle={{background:"#fff",border:"1px solid #E5E5EA",borderRadius:10,color:"#1C1C1E",boxShadow:"0 4px 16px rgba(0,0,0,0.1)"}}/><Legend wrapperStyle={{fontSize:"12px",color:"#7B91B5"}}/><Line type="monotone" dataKey="wt" stroke="#DC143C" strokeWidth={2} name="Weight" dot={(p)=>{const{cx,cy,payload}=p;if(payload.isA||payload.isB)return <circle key={p.key} cx={cx} cy={cy} r={7} fill={payload.isA?"#3B82F6":"#10B981"} stroke="#111827" strokeWidth={2}/>;return <circle key={p.key} cx={cx} cy={cy} r={3} fill="#DC143C"/>;}} /><Line type="monotone" dataKey="ln" stroke="#10B981" strokeWidth={2} name="Lean (kg)" dot={false}/><Line type="monotone" dataKey="bf" stroke="#F5A623" strokeWidth={1.5} strokeDasharray="4 2" name="BF %" dot={false}/></LineChart></ResponsiveContainer>
+          <ResponsiveContainer width="100%" height={195}><LineChart data={[...pl.measurements].sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=>({date:m.date.slice(5),wt:m.weight,ln:leanMass(m.weight,m.bodyFat),bf:m.bodyFat,isA:m.date===dA,isB:m.date===dB}))}><CartesianGrid strokeDasharray="3 3" stroke="#E5E5EA"/><XAxis dataKey="date" tick={{fill:"#8E8E93",fontSize:11}} axisLine={false} tickLine={false}/><YAxis tick={{fill:"#8E8E93",fontSize:11}} axisLine={false} tickLine={false} domain={["auto","auto"]}/><Tooltip contentStyle={{background:"#fff",border:"1px solid #E5E5EA",borderRadius:10,color:"#1C1C1E",boxShadow:"0 4px 16px rgba(0,0,0,0.1)"}}/><Legend wrapperStyle={{fontSize:"12px",color:"#7B91B5"}}/><Line type="monotone" dataKey="wt" stroke="#DC143C" strokeWidth={2} name="Weight" dot={(p)=>{const{cx,cy,payload}=p;if(payload.isA||payload.isB)return <circle key={p.key} cx={cx} cy={cy} r={7} fill={payload.isA?"#3B82F6":"#10B981"} stroke="#111827" strokeWidth={2}/>;return <circle key={p.key} cx={cx} cy={cy} r={3} fill="#DC143C"/>;}} /><Line type="monotone" dataKey="ln" stroke="#10B981" strokeWidth={2} name="Lean (kg)" dot={false}/><Line type="monotone" dataKey="bf" stroke="#F5A623" strokeWidth={1.5} strokeDasharray="4 2" name="BF %" dot={false}/></LineChart></ResponsiveContainer>
           <div style={{display:"flex",gap:14,marginTop:8}}><span style={{fontSize:".74rem",color:"#3B82F6",fontWeight:600}}>● Date A</span><span style={{fontSize:".74rem",color:"#10B981",fontWeight:600}}>● Date B</span></div>
         </div>
         <div className="card" style={{padding:18,marginBottom:18}}>
@@ -1322,7 +1413,15 @@ const PP=({player,user,setView,setSel,onAddM})=>{
   const{bmr,tdee}=calcTDEE(m.weight,m.height,age,player.trainingLoad,player.nutritionGoal);
   const{protein,fat,carb}=calcMacros(tdee,m.weight,player.nutritionGoal);
   const gp=calcGoal(player);
-  const saveM=()=>{if(!nm.weight||!nm.bodyFat)return;onAddM(player.id,{date:new Date().toISOString().split("T")[0],weight:+nm.weight,bodyFat:+nm.bodyFat,height:+(nm.height||m.height),notes:nm.notes});setNm({weight:"",bodyFat:"",height:"",notes:""});setSm(false);};
+  const toast=useToast();
+  const saveM=()=>{
+    if(!nm.weight||!nm.bodyFat){toast?.warn("Please enter weight and body fat %.");return;}
+    if(+nm.bodyFat<3||+nm.bodyFat>50){toast?.error("Body fat % must be between 3 and 50.");return;}
+    if(+nm.weight<30||+nm.weight>200){toast?.error("Weight must be between 30 and 200 kg.");return;}
+    onAddM(player.id,{date:new Date().toISOString().split("T")[0],weight:+nm.weight,bodyFat:+nm.bodyFat,height:+(nm.height||m.height),notes:nm.notes});
+    toast?.success(`Measurement saved — ${nm.weight}kg / ${nm.bodyFat}% BF ☁️`);
+    setNm({weight:"",bodyFat:"",height:"",notes:""});setSm(false);
+  };
   const doSh=async meth=>{const t=`Al Duhail SC — ${player.name} (#${player.number})\n${player.position} · ${player.nationality} · Age ${age} · Male\nWeight: ${m.weight}kg · Body Fat: ${m.bodyFat}% · Lean Mass: ${leanMass(m.weight,m.bodyFat)}kg\nBMR: ${bmr} kcal · Daily Target: ${tdee} kcal\nProtein: ${protein}g · Carbs: ${carb}g · Fats: ${fat}g`;if(meth==="print"){openPrint(genPH(player),"Player Report — "+player.name);setSS(false);return;}if(meth==="native"){await shareT(t,"native");setSS(false);return;}if(meth==="copy"){await shareT(t,"copy");setCp(true);setTimeout(()=>setCp(false),2000);setSS(false);return;}await shareT(t,meth);setSS(false);};
   return(
     <div className="fi mob-pad" style={{padding:"26px 28px",maxWidth:980}}>
@@ -1342,7 +1441,7 @@ const PP=({player,user,setView,setSel,onAddM})=>{
         <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
           <button className="btn btg" onClick={()=>setSS(true)} style={{display:"flex",alignItems:"center",gap:5,borderColor:"var(--gd)",color:"var(--gd)"}}><Share2 size={13}/>Export</button>
           {ce&&<button className="btn btg" onClick={()=>{setSel(player.id);setView("ep");}} style={{display:"flex",alignItems:"center",gap:5}}><Edit3 size={13}/>Edit</button>}
-          <button className="btn btg" onClick={()=>{setSel(player.id);setView("cmp");}} style={{display:"flex",alignItems:"center",gap:5,borderColor:"#3B82F6",color:"#3B82F6"}}><GitCompare size={13}/>Compare</button>
+          {user.role!=="player"&&<button className="btn btg" onClick={()=>{setSel(player.id);setView("cmp");}} style={{display:"flex",alignItems:"center",gap:5,borderColor:"#3B82F6",color:"#3B82F6"}}><GitCompare size={13}/>Compare</button>}
           <button className="btn btg" onClick={()=>{setSel(player.id);setView("sup");}} style={{display:"flex",alignItems:"center",gap:5,borderColor:"#8B5CF6",color:"#8B5CF6"}}><Pill size={13}/>Supplements</button>
           <button className="btn btg" onClick={()=>{setSel(player.id);setView("hist");}} style={{display:"flex",alignItems:"center",gap:5}}><Activity size={13}/>History</button>
           <button className="btn btg" onClick={()=>openBodyReport(player)} style={{display:"flex",alignItems:"center",gap:5,background:"linear-gradient(135deg,#DC143C,#8B0000)",color:"#fff",border:"none",boxShadow:"0 2px 8px rgba(220,20,60,.3)"}}><FileText size={13}/>Body Report</button>
@@ -1408,8 +1507,13 @@ const PForm=({player,onSave,goPlayers,players=[]})=>{
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const hp=async e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=async ev=>{u("photo",await resizePhoto(ev.target.result));};r.readAsDataURL(file);};
   const dupWarning=!isE&&players&&players.find&&f.number&&players.find(p=>p.number===+f.number);
+  const toastForm=useToast();
   const save=()=>{
-    if(!f.name||!f.dob||!f.weight)return;
+    if(!f.name.trim()){toastForm?.error("Player name is required.");return;}
+    if(!f.dob){toastForm?.error("Date of birth is required.");return;}
+    if(!f.weight||+f.weight<30){toastForm?.error("Please enter a valid weight (min 30kg).");return;}
+    if(!f.bodyFat||+f.bodyFat<3){toastForm?.error("Please enter a valid body fat % (min 3%).");return;}
+    if(!f.number||+f.number<1){toastForm?.error("Please enter a valid player number.");return;}
     if(dupWarning){
       const ok=window.confirm(`Player #${f.number} (${dupWarning.name}) already exists!\n\nDo you want to ADD A NEW MEASUREMENT to the existing player instead?\n\nClick OK to add measurement, Cancel to create a new player anyway.`);
       if(ok){
@@ -1423,6 +1527,7 @@ const PForm=({player,onSave,goPlayers,players=[]})=>{
     const data={name:f.name,number:+f.number,dob:f.dob,nationality:f.nationality,position:f.position,nutritionGoal:f.nutritionGoal,allergies:f.allergies,injuries:f.injuries,trainingLoad:f.trainingLoad,trainingTime:f.trainingTime,targetBodyFat:f.targetBodyFat?+f.targetBodyFat:null,targetWeight:f.targetWeight?+f.targetWeight:null,startWeight:+f.weight,startBodyFat:+f.bodyFat,photo:f.photo,supplements:player?.supplements||defSupps(),customSupplements:player?.customSupplements||[]};
     if(isE)onSave({...player,...data,measurements:[...player.measurements.slice(0,-1),{...player.measurements[player.measurements.length-1],weight:+f.weight,bodyFat:+f.bodyFat,height:+f.height}]});
     else onSave({...data,measurements:[meas]});
+    toastForm?.success(isE?`${f.name} updated successfully ✓`:`${f.name} added to squad ✓`);
     goPlayers();
   };
   const lb={display:"block",fontSize:".72rem",color:"var(--mt)",marginBottom:5,fontWeight:600,letterSpacing:.4};
@@ -1478,7 +1583,8 @@ const Sup=({player,user,onSave,setView})=>{
   const[nc,setNc]=useState({name:"",dose:"",timing:""});const[snc,setSnc]=useState(false);
   const upd=(k,fld,v)=>setSupps(s=>s.map(x=>x.key===k?{...x,[fld]:v}:x));
   const addC=()=>{if(!nc.name)return;setCust(c=>[...c,{...nc,id:Date.now()}]);setNc({name:"",dose:"",timing:""});setSnc(false);};
-  const sv=()=>{onSave({...player,supplements:supps,customSupplements:cust});setView("pp");};
+  const toast2=useToast();
+  const sv=()=>{onSave({...player,supplements:supps,customSupplements:cust});toast2?.success("Supplement plan saved ✓");setView("pp");};
   return(
     <div className="fi" style={{padding:"26px 28px",maxWidth:860}}>
       <BB onClick={()=>setView("pp")}/>
@@ -1525,7 +1631,7 @@ const Sup=({player,user,onSave,setView})=>{
 
 // ── HISTORY ───────────────────────────────────────────────────
 const Hist=({player,setView})=>{
-  const d=player.measurements.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=>({date:m.date.slice(5),wt:m.weight,bf:m.bodyFat,ln:leanMass(m.weight,m.bodyFat),ft:fatMass(m.weight,m.bodyFat)}));
+  const d=[...player.measurements].sort((a,b)=>new Date(a.date)-new Date(b.date)).map(m=>({date:m.date.slice(5),wt:m.weight,bf:m.bodyFat,ln:leanMass(m.weight,m.bodyFat),ft:fatMass(m.weight,m.bodyFat)}));
   return(
     <div className="fi" style={{padding:"26px 28px",maxWidth:900}}>
       <BB onClick={()=>setView("pp")}/>
@@ -1996,7 +2102,7 @@ const Stg=({user,players,extraUsers,onImportPlayers,onImportUsers,onUpdateUser})
         <p style={{color:"var(--mt)",fontSize:".8rem",marginBottom:14}}>Reset passwords for registered users.</p>
         {extraUsers.map(u=>(
           <div key={u.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid var(--bd)"}}>
-            <div style={{width:34,height:34,borderRadius:"50%",background:ROLE_C[u.role]||"#888",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:".8rem",flexShrink:0}}>{u.name.slice(0,2).toUpperCase()}</div>
+            <div style={{width:34,height:34,borderRadius:"50%",background:RC[u.role]||"#888",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:".8rem",flexShrink:0}}>{u.name.slice(0,2).toUpperCase()}</div>
             <div style={{flex:1}}>
               <p style={{fontWeight:600,fontSize:".85rem"}}>{u.name}</p>
               <p style={{fontSize:".73rem",color:"var(--mt)",textTransform:"capitalize"}}>{u.role} · @{u.username}</p>
@@ -2032,7 +2138,8 @@ const Stg=({user,players,extraUsers,onImportPlayers,onImportUsers,onUpdateUser})
 };
 
 // ── MAIN APP ──────────────────────────────────────────────────
-export default function App(){
+// Inner app component
+function AppInner(){
   const[user,setUser]=useState(null);
   const[players,setPlayers]=useState([]);
   const[extra,setExtra]=useState([]);
@@ -2183,5 +2290,15 @@ export default function App(){
         </button>
       </div>
     </div></>
+  );
+}
+
+export default function App(){
+  return(
+    <ErrorBoundary>
+      <ToastProvider>
+        <AppInner/>
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
