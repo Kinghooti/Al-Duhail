@@ -3,52 +3,59 @@ import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { Users, AlertCircle, Plus, Edit3, LogOut, Home, FileText, Search, ArrowLeft, Save, Utensils, Scale, Zap, Droplets, Activity, ChevronRight, User, Eye, EyeOff, Award, AlertTriangle, X, Check, Lock, Camera, Pill, Trash2, BarChart2, TrendingUp, TrendingDown, GitCompare, Share2, Mail, Printer, Copy, CheckCircle } from "lucide-react";
 
 
-// ── FIREBASE CONFIG ──────────────────────────────────────────
-// Fill in your Firebase project details below
-const FIREBASE_CONFIG = {
-  databaseURL: "https://nutipro-default-rtdb.firebaseio.com",
-  apiKey: "",
-};
+// ── FIREBASE REALTIME DATABASE ──────────────────────────────
+const FB_URL = "https://nutipro-default-rtdb.firebaseio.com";
+const FB_KEY = (k) => `${FB_URL}/duhailnutrition/${k}.json`;
+const LS_KEY = (k) => `duhail_v3_${k}`;
 
-// ── STORAGE ENGINE ───────────────────────────────────────────
-// Uses Firebase Realtime Database if configured, otherwise falls back to window.storage
 const DB = {
-  _fbConfigured: () => !!FIREBASE_CONFIG.databaseURL,
-
-  _fbURL: (key) => `${FIREBASE_CONFIG.databaseURL}/duhailnutrition/${key}.json`,
-
   async get(k, d=null) {
-    // Try Firebase first
-    if (DB._fbConfigured()) {
-      try {
-        const res = await fetch(DB._fbURL(k));
-        if (res.ok) {
-          const val = await res.json();
-          if (val !== null) return val;
+    // 1. Try Firebase (primary)
+    try {
+      const res = await fetch(FB_KEY(k));
+      if (res.ok) {
+        const val = await res.json();
+        if (val !== null && val !== undefined) {
+          // Cache to localStorage
+          try { localStorage.setItem(LS_KEY(k), JSON.stringify(val)); } catch{}
+          return val;
         }
-      } catch(e) { console.warn("Firebase get failed, using local:", e); }
-    }
-    // Fallback to window.storage
-    try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : d; }
-    catch { return d; }
+      }
+    } catch(e) { console.warn("Firebase read failed, using local:", e); }
+    // 2. Fallback: localStorage
+    try {
+      const v = localStorage.getItem(LS_KEY(k));
+      if (v) return JSON.parse(v);
+    } catch{}
+    // 3. Last resort: try window.storage (Claude artifact)
+    try {
+      const r = await window.storage?.get(k);
+      if (r?.value) return JSON.parse(r.value);
+    } catch{}
+    return d;
   },
 
   async set(k, v) {
-    // Save to both Firebase AND window.storage for redundancy
-    if (DB._fbConfigured()) {
-      try {
-        await fetch(DB._fbURL(k), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(v),
-        });
-      } catch(e) { console.warn("Firebase save failed:", e); }
+    // 1. Firebase (primary) — never save if empty array/null
+    if (Array.isArray(v) && v.length === 0) {
+      // Don't overwrite Firebase with empty — just update localStorage
+      try { localStorage.setItem(LS_KEY(k), JSON.stringify(v)); } catch{}
+      return;
     }
-    // Always also save locally as backup
-    try { await window.storage.set(k, JSON.stringify(v)); } catch {}
+    try {
+      await fetch(FB_KEY(k), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(v),
+      });
+    } catch(e) { console.warn("Firebase write failed:", e); }
+    // 2. localStorage backup
+    try { localStorage.setItem(LS_KEY(k), JSON.stringify(v)); } catch{}
+    // 3. window.storage (Claude artifact) backup
+    try { await window.storage?.set(k, JSON.stringify(v)); } catch{}
   },
 
-  isCloud: () => DB._fbConfigured(),
+  isCloud: () => true,
 };
 
 
@@ -149,417 +156,342 @@ const genBodyReportHTML = (player) => {
   const bfs = bfSt(m.bodyFat);
   const gp = calcGoal(player);
   const date = new Date().toLocaleDateString('en-GB');
+  const nf = NAT_FOOD[player.nationality] || NAT_FOOD.Other;
+  const isHL = ["High","Very High"].includes(player.trainingLoad);
 
-  const tBF  = player.targetBodyFat  ? `${player.targetBodyFat}%`  : "—";
-  const tW   = player.targetWeight   ? `${player.targetWeight}kg`  : "—";
-  const tLean = player.targetBodyFat
-    ? `${leanMass(player.targetWeight||m.weight, +player.targetBodyFat)}kg`
-    : "—";
+  // Active supplements
+  const actS = (player.supplements||[]).filter(s=>s.enabled);
+  const actC = player.customSupplements||[];
 
-  const barW = (val, max, col) =>
-    `<div style="height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-top:4px">
-       <div style="height:100%;width:${Math.min(100,(val/max*100)).toFixed(0)}%;background:${col};border-radius:4px"></div>
-     </div>`;
+  // Meal plan
+  const [tH, tM] = (player.trainingTime||"16:00").split(":").map(Number);
+  const meals = [
+    {t:fmtT(tH-5,tM), m:"Breakfast", d:`Oats ${Math.round(carb*0.25)}g carbs + 3 eggs + fruit + Greek yogurt`},
+    {t:fmtT(tH-2,tM), m:"Pre-Training (2h)", d:`${Math.round(carb*0.25)}g complex carbs + ${Math.round(protein*0.2)}g lean protein`},
+    {t:fmtT(tH-1,(tM+30)%60), m:"Pre-Training (30 min)", d:"Banana + water + pinch salt"},
+    {t:player.trainingTime||"16:00", m:"🏋️ Training", d:"500ml electrolyte drink/hr"},
+    {t:fmtT(tH,(tM+30)%60), m:"Post-Training ⚡", d:`${Math.round(protein*0.3)}g fast protein + ${Math.round(carb*0.3)}g fast carbs`},
+    {t:fmtT(tH+2,tM), m:"Recovery Meal", d:`${Math.round(carb*0.3)}g complex carbs + ${Math.round(protein*0.25)}g protein`},
+    {t:fmtT(tH+5,tM), m:"Dinner", d:"Grilled protein + salad + small complex carb"},
+    {t:fmtT(tH+7,tM), m:"Bedtime", d:"25g casein + 300mg magnesium glycinate"},
+  ];
 
-  const progPct = gp?.bodyFat?.progress ?? null;
-  const progWt  = gp?.weight?.progress  ?? null;
+  // Position tips
+  const tips = [];
+  if(player.position==="Goalkeeper"){tips.push("Explosive power: creatine 3–5g/day");tips.push("Protein 2.2g/kg for upper-body & core");}
+  else if(["Right Winger","Left Winger","Striker","Attacking Midfielder"].includes(player.position)){tips.push("High-carb 6–8g/kg essential for sprint demands");tips.push("Carb-load 48h before matches: 8–10g/kg");}
+  else if(["Centre Back","Right Back","Left Back","Defensive Midfielder"].includes(player.position)){tips.push("Anti-inflammatory: omega-3, turmeric, berries");tips.push("Protein 2.0g/kg for aerial duels & tackling");}
+  else{tips.push("Balanced macros for 90-min aerobic output");tips.push("Half-time: 30–40g fast carbs (gel/banana)");}
+  if(isHL){tips.push("Electrolytes mandatory >45 min in Qatar heat");tips.push("Casein 25g + magnesium 300mg before sleep");}
+
+  // Player photo or SVG
+  const photoSection = player.photo
+    ? `<img src="${player.photo}" style="width:180px;height:auto;max-height:240px;object-fit:cover;border-radius:10px;border:3px solid #DC143C;display:block;margin:0 auto;box-shadow:0 4px 16px rgba(0,0,0,0.2)"/>`
+    : `<svg viewBox="0 0 160 320" style="width:170px;height:auto;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="80" cy="314" rx="42" ry="6" fill="rgba(0,0,0,0.08)"/>
+        <circle cx="80" cy="36" r="28" fill="#E8D5C4" stroke="#C4A882" stroke-width="1.5"/>
+        <ellipse cx="80" cy="11" rx="28" ry="12" fill="#5D4037"/>
+        <rect x="52" y="8" width="56" height="14" rx="7" fill="#5D4037"/>
+        <rect x="70" y="62" width="20" height="18" rx="4" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M30 88 Q55 78 80 80 Q105 78 130 88 L128 95 Q105 86 80 88 Q55 86 32 95Z" fill="#DC143C"/>
+        <path d="M32 95 L28 175 L132 175 L128 95 Q105 86 80 88 Q55 86 32 95Z" fill="#DC143C"/>
+        <text x="80" y="145" text-anchor="middle" fill="white" font-family="Arial,sans-serif" font-size="22" font-weight="700">${player.number}</text>
+        <path d="M32 95 L10 150 Q8 158 14 162 L36 115Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M14 162 L6 210 Q4 218 10 220 L20 175Z" fill="#E8D5C4"/>
+        <ellipse cx="9" cy="223" rx="8" ry="6" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M128 95 L150 150 Q152 158 146 162 L124 115Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M146 162 L154 210 Q156 218 150 220 L140 175Z" fill="#E8D5C4"/>
+        <ellipse cx="151" cy="223" rx="8" ry="6" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M28 175 L34 230 L78 230 L80 210 L82 230 L126 230 L132 175Z" fill="#1C1C1E"/>
+        <path d="M34 230 L26 300 Q25 308 34 309 L46 235Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M126 230 L134 300 Q135 308 126 309 L114 235Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
+        <path d="M34 309 L30 334 L44 334 L46 309Z" fill="#E8D5C4"/>
+        <path d="M126 309 L130 334 L116 334 L114 309Z" fill="#E8D5C4"/>
+        <path d="M22 332 Q20 339 36 339 L48 339 L46 333Z" fill="#1C1C1E"/>
+        <path d="M138 332 Q140 339 124 339 L112 339 L114 333Z" fill="#1C1C1E"/>
+      </svg>`;
+
+  const mealsHTML = meals.map(meal=>
+    `<tr><td style="padding:7px 10px;color:#D4840A;font-weight:700;font-size:12px;white-space:nowrap">${meal.t}</td><td style="padding:7px 10px;font-weight:600;font-size:12px">${meal.m}</td><td style="padding:7px 10px;color:#555;font-size:12px">${meal.d}</td></tr>`
+  ).join('');
+
+  const supplHTML = actS.length===0&&actC.length===0
+    ? '<p style="color:#888;font-size:12px">No active supplements</p>'
+    : [...actS.map(s=>{const cat=SUPPS.find(x=>x.key===s.key);return`<div style="display:inline-block;background:#f3f0ff;border:1px solid #c4b5fd;border-radius:6px;padding:5px 10px;margin:3px;font-size:11px"><b>${cat?.emoji||''} ${cat?.label||s.key}</b><br>${s.selectedType}<br><span style="color:#7c3aed">${s.dose} · ${s.timing}</span></div>`;}),
+    ...actC.map(c=>`<div style="display:inline-block;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:5px 10px;margin:3px;font-size:11px"><b>🔹 ${c.name}</b><br><span style="color:#1d4ed8">${c.dose} · ${c.timing}</span></div>`)
+    ].join('');
+
+  const tBF = player.targetBodyFat ? `${player.targetBodyFat}%` : "—";
+  const tW  = player.targetWeight  ? `${player.targetWeight}kg` : "—";
+  const progBF = gp?.bodyFat?.progress ?? null;
+  const progW  = gp?.weight?.progress  ?? null;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <title>Body Report — ${player.name}</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=DM+Sans:wght@400;500;600&display=swap');
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{font-family:'DM Sans',sans-serif;background:#fff;color:#1C1C1E;font-size:13px;padding:0;}
-  h1,h2,.hd{font-family:'Rajdhani',sans-serif;}
-  .page{width:210mm;min-height:297mm;margin:0 auto;padding:14mm 12mm;background:#fff;}
-  /* HEADER */
-  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10mm;padding-bottom:5mm;border-bottom:3px solid #DC143C;}
-  .header-left{display:flex;align-items:center;gap:12px;}
-  .header-left img{width:52px;height:52px;object-fit:contain;}
-  .club-name{font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;color:#1C1C1E;line-height:1.1;}
-  .club-sub{font-size:10px;color:#DC143C;letter-spacing:2px;font-weight:600;}
-  .header-right{text-align:right;}
-  .report-title{font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:#DC143C;}
-  .report-date{font-size:11px;color:#6E6E73;margin-top:2px;}
-  /* PLAYER INFO BAR */
-  .player-bar{background:linear-gradient(135deg,#DC143C,#8B0000);color:#fff;border-radius:10px;padding:10px 16px;margin-bottom:8mm;display:flex;align-items:center;gap:16px;}
-  .player-name{font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;}
-  .player-meta{font-size:11px;opacity:.85;margin-top:2px;}
-  .player-badge{background:rgba(255,255,255,.2);padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;}
-  /* MAIN GRID */
-  .main-grid{display:grid;grid-template-columns:1fr 160px 1fr;gap:6mm;align-items:center;margin-bottom:8mm;}
-  /* LEFT CALLOUTS */
-  .callout-col{display:flex;flex-direction:column;gap:8px;}
-  .callout-left{text-align:right;}
-  .callout-right{text-align:left;}
-  .callout-box{position:relative;padding:7px 10px;border-radius:7px;border:1px solid #E5E5EA;}
-  .callout-left .callout-box{border-right:3px solid #DC143C;}
-  .callout-right .callout-box{border-left:3px solid #3B82F6;}
-  .cl{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#6E6E73;margin-bottom:2px;}
-  .cv{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:#1C1C1E;}
-  .ct{font-size:10px;color:#DC143C;font-weight:600;}
-  .cg{font-size:10px;color:#10B981;font-weight:600;}
-  .arrow-line-r{display:flex;align-items:center;justify-content:flex-end;gap:4px;margin-top:2px;}
-  .arrow-line-l{display:flex;align-items:center;justify-content:flex-start;gap:4px;margin-top:2px;}
-  /* BODY FIGURE */
-  .body-figure{display:flex;flex-direction:column;align-items:center;}
-  svg.body{width:160px;height:320px;}
-  /* STATS ROW */
-  .stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:6mm;}
-  .stat-box{background:#F8F8FA;border-radius:8px;padding:8px 6px;text-align:center;border:1px solid #E5E5EA;}
-  .stat-box.red{border-top:3px solid #DC143C;}
-  .stat-box.green{border-top:3px solid #10B981;}
-  .stat-box.blue{border-top:3px solid #3B82F6;}
-  .stat-box.gold{border-top:3px solid #D4840A;}
-  .stat-box.purple{border-top:3px solid #8B5CF6;}
-  .stat-box.teal{border-top:3px solid #06B6D4;}
-  .stat-label{font-size:8px;color:#6E6E73;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
-  .stat-val{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:#1C1C1E;}
-  .stat-sub{font-size:9px;color:#8E8E93;margin-top:1px;}
-  /* NUTRITION */
-  .nutri-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:6mm;}
-  .nutri-box{border-radius:8px;padding:8px;text-align:center;}
-  .nutri-box.calories{background:linear-gradient(135deg,#DC143C,#8B0000);color:#fff;}
-  .nutri-box.protein{background:#E8F8F0;border:1px solid #A8E6C8;}
-  .nutri-box.carbs{background:#EBF3FF;border:1px solid #BFDBFE;}
-  .nutri-box.fats{background:#FFFBE8;border:1px solid #FDE68A;}
-  .nutri-label{font-size:9px;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:3px;}
-  .nutri-val{font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;}
-  .nutri-sub{font-size:9px;opacity:.7;margin-top:1px;}
-  /* GOALS */
-  .goals-section{border:1px solid #E5E5EA;border-radius:10px;padding:10px 14px;margin-bottom:6mm;}
-  .goals-title{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;color:#10B981;margin-bottom:8px;}
-  .goal-row{display:grid;grid-template-columns:120px 1fr 60px;gap:10px;align-items:center;margin-bottom:8px;}
-  .goal-label{font-size:10px;color:#6E6E73;}
-  .goal-bar-bg{height:10px;background:#F2F2F7;border-radius:5px;overflow:hidden;}
-  .goal-bar-fill{height:100%;border-radius:5px;}
-  .goal-pct{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;text-align:right;}
-  /* FOOTER */
-  .footer{margin-top:6mm;padding-top:4mm;border-top:1px solid #E5E5EA;display:flex;justify-content:space-between;align-items:center;}
-  .footer-left{font-size:9px;color:#8E8E93;}
-  .footer-right{font-size:9px;color:#DC143C;font-weight:600;}
-  /* PRINT */
-  @media print{
-    body{padding:0;}
-    .page{padding:10mm 10mm;width:210mm;margin:0;}
-    .no-print{display:none!important;}
-    @page{size:A4;margin:0;}
-  }
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1C1C1E;font-size:13px;}
+.page{width:210mm;margin:0 auto;padding:10mm 10mm;background:#fff;}
+/* HEADER */
+.hdr{display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #DC143C;padding-bottom:8px;margin-bottom:10px;}
+.club{display:flex;align-items:center;gap:10px;}
+.club img{width:50px;height:50px;object-fit:contain;}
+.club-name{font-family:'Rajdhani',sans-serif;font-size:20px;font-weight:700;}
+.club-sub{font-size:10px;color:#DC143C;letter-spacing:2px;}
+.rpt-title{text-align:right;}
+.rpt-title h2{font-family:'Rajdhani',sans-serif;font-size:16px;color:#DC143C;}
+.rpt-title p{font-size:10px;color:#666;margin-top:2px;}
+/* PLAYER BAR */
+.player-bar{background:linear-gradient(135deg,#DC143C,#8B0000);color:#fff;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;}
+.player-num{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:16px;flex-shrink:0;}
+.player-name{font-family:'Rajdhani',sans-serif;font-size:20px;font-weight:700;}
+.player-meta{font-size:10px;opacity:.8;margin-top:2px;}
+.badge{background:rgba(255,255,255,.2);padding:3px 8px;border-radius:12px;font-size:10px;font-weight:600;margin-left:6px;}
+/* MAIN GRID: photo + measurements */
+.main-grid{display:grid;grid-template-columns:1fr 190px 1fr;gap:10px;margin-bottom:10px;align-items:start;}
+.photo-col{text-align:center;}
+.photo-caption{font-size:10px;color:#888;margin-top:5px;}
+/* MEASUREMENT CALLOUTS */
+.callouts{display:flex;flex-direction:column;gap:6px;}
+.callout{border-radius:7px;border:1px solid #E5E5EA;padding:8px 11px;position:relative;}
+.callout.red{border-left:3px solid #EF4444;}
+.callout.green{border-left:3px solid #10B981;}
+.callout.blue{border-left:3px solid #3B82F6;}
+.callout.gold{border-left:3px solid #D4840A;}
+.callout.purple{border-left:3px solid #8B5CF6;}
+.callout.teal{border-left:3px solid #06B6D4;}
+.cl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px;}
+.cv{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;}
+.cs{font-size:10px;color:#666;margin-top:1px;}
+.ctag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;margin-top:3px;}
+/* STATS ROW */
+.stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:7px;margin-bottom:10px;}
+.stat-box{background:#F8F8FA;border-radius:7px;padding:8px 6px;text-align:center;border-top:2px solid #DC143C;}
+.stat-box.g{border-top-color:#10B981;}
+.stat-box.b{border-top-color:#3B82F6;}
+.stat-box.y{border-top-color:#D4840A;}
+.stat-box.p{border-top-color:#8B5CF6;}
+.stat-box.t{border-top-color:#06B6D4;}
+.sl{font-size:8px;color:#888;text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px;}
+.sv{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;}
+.ss{font-size:9px;color:#8E8E93;margin-top:1px;}
+/* SECTION */
+.sec{margin-bottom:10px;}
+.sec-title{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;color:#DC143C;border-bottom:1.5px solid #DC143C;padding-bottom:3px;margin-bottom:8px;}
+table.meal{width:100%;border-collapse:collapse;}
+table.meal tr{border-bottom:1px solid #F2F2F7;}
+/* NUTRITION CARDS */
+.nutri-row{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:10px;}
+.nc{border-radius:7px;padding:8px;text-align:center;}
+.nc.cal{background:linear-gradient(135deg,#DC143C,#8B0000);color:#fff;}
+.nc.pro{background:#E8F8F0;border:1px solid #A8E6C8;}
+.nc.cb{background:#EBF3FF;border:1px solid #BFDBFE;}
+.nc.ft{background:#FFFBE8;border:1px solid #FDE68A;}
+.nl{font-size:8px;text-transform:uppercase;opacity:.7;margin-bottom:2px;}
+.nv{font-family:'Rajdhani',sans-serif;font-size:17px;font-weight:700;}
+/* GOALS */
+.goal-row{display:grid;grid-template-columns:140px 1fr 55px;gap:8px;align-items:center;margin-bottom:6px;}
+.goal-bar{height:9px;background:#F2F2F7;border-radius:5px;overflow:hidden;}
+.goal-fill{height:100%;border-radius:5px;}
+/* NOTES */
+.notes-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:12px 14px;white-space:pre-wrap;font-size:12px;line-height:1.7;color:#1C1C1E;}
+/* TIPS */
+.tip-item{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #F2F2F7;font-size:11px;line-height:1.5;}
+/* FOOTER */
+.footer{margin-top:10px;padding-top:7px;border-top:1px solid #E5E5EA;display:flex;justify-content:space-between;font-size:9px;color:#8E8E93;}
+@media print{body{padding:0;}@page{size:A4;margin:0;}.page{padding:8mm;}.no-print{display:none!important;}}
 </style>
 </head>
 <body>
 
-<!-- TOP BUTTONS (hidden on print) -->
-<div class="no-print" style="background:#1C1C1E;padding:12px 20px;display:flex;gap:10px;align-items:center;justify-content:center;">
-  <span style="color:#fff;font-size:13px;font-weight:600;margin-right:10px">📋 ${player.name} — Body Report</span>
-  <button onclick="window.print()" style="background:#DC143C;color:#fff;border:none;padding:9px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">🖨️ Print / Save PDF</button>
-  <button onclick="downloadAsPNG()" style="background:#3B82F6;color:#fff;border:none;padding:9px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">🖼️ Save as Image</button>
-  <button onclick="window.close()" style="background:#6E6E73;color:#fff;border:none;padding:9px 16px;border-radius:8px;cursor:pointer;font-size:13px">✕ Close</button>
+<!-- BUTTONS -->
+<div class="no-print" style="background:#1C1C1E;padding:10px 18px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap">
+  <span style="color:#fff;font-size:13px;font-weight:600">📋 ${player.name} — Body Composition Report</span>
+  <button onclick="window.print()" style="background:#DC143C;color:#fff;border:none;padding:9px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">🖨️ Print / Save PDF</button>
+  <button onclick="saveImg()" style="background:#3B82F6;color:#fff;border:none;padding:9px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">🖼️ Save as Image</button>
+  <button onclick="window.close()" style="background:#6E6E73;color:#fff;border:none;padding:9px 14px;border-radius:8px;cursor:pointer;font-size:13px">✕</button>
 </div>
 
-<div class="page" id="report-page">
+<div class="page" id="rpage">
 
-  <!-- HEADER -->
-  <div class="header">
-    <div class="header-left">
-      <img src="data:image/jpeg;base64,${LOGO}" alt="Al Duhail SC"/>
-      <div>
-        <div class="club-name">AL DUHAIL SC</div>
-        <div class="club-sub">NUTRITION MANAGEMENT SYSTEM</div>
-      </div>
+<!-- HEADER -->
+<div class="hdr">
+  <div class="club">
+    <img src="data:image/jpeg;base64,${LOGO}" alt="Al Duhail SC"/>
+    <div><div class="club-name">AL DUHAIL SC</div><div class="club-sub">NUTRITION MANAGEMENT SYSTEM</div></div>
+  </div>
+  <div class="rpt-title">
+    <h2>BODY COMPOSITION REPORT</h2>
+    <p>Date: ${date} · Assessed by: Nutrition Team</p>
+    <p>Mifflin-St Jeor (Male) + Qatar Heat ×1.07</p>
+  </div>
+</div>
+
+<!-- PLAYER BAR -->
+<div class="player-bar">
+  <div class="player-num">${player.number}</div>
+  <div style="flex:1">
+    <div class="player-name">${player.name} ♂</div>
+    <div class="player-meta">${player.position} · ${player.nationality} · Age ${age} · Training: ${player.trainingTime||"16:00"} · ${player.nutritionGoal}</div>
+  </div>
+  <span class="badge">${player.trainingLoad} Load</span>
+</div>
+
+<!-- MAIN: LEFT CALLOUTS | PHOTO | RIGHT CALLOUTS -->
+<div class="main-grid">
+
+  <!-- LEFT CALLOUTS -->
+  <div class="callouts">
+    <div class="callout red">
+      <div class="cl">Body Fat %</div>
+      <div class="cv" style="color:#EF4444">${m.bodyFat}%</div>
+      <div class="cs">Status: <b>${bfs.l}</b></div>
+      <span class="ctag" style="background:${bfs.c}20;color:${bfs.c}">Target: ${tBF}</span>
     </div>
-    <div class="header-right">
-      <div class="report-title">BODY COMPOSITION REPORT</div>
-      <div class="report-date">Date: ${date} · Assessed by: Nutrition Team</div>
-      <div class="report-date">Formula: Mifflin-St Jeor (Male) + Qatar Heat ×1.07</div>
+    <div class="callout purple">
+      <div class="cl">Fat Mass</div>
+      <div class="cv" style="color:#8B5CF6">${fatM}kg</div>
+      <div class="cs">To lose: ${player.targetBodyFat?(fatM-fatMass(player.targetWeight||m.weight,+player.targetBodyFat)).toFixed(1)+"kg":"—"}</div>
+    </div>
+    <div class="callout red" style="border-left-color:#DC143C">
+      <div class="cl">Daily Calories (TDEE)</div>
+      <div class="cv" style="color:#DC143C">${tdee} kcal</div>
+      <div class="cs">BMR: ${bmr} kcal</div>
+    </div>
+    <div class="callout blue">
+      <div class="cl">BMI / FFMI</div>
+      <div class="cv" style="color:#3B82F6">${bmi} / ${ffmi}</div>
+      <div class="cs">FFMI target: 20–25</div>
+    </div>
+    ${player.allergies&&player.allergies!=="None"?`<div style="background:#FEF9C3;border:1px solid #FDE047;border-left:3px solid #D4840A;border-radius:6px;padding:7px 9px;font-size:10px"><b style="color:#854D0E">⚠ Allergies</b><br><span style="color:#1C1C1E">${player.allergies}</span></div>`:""}
+    ${player.injuries&&player.injuries!=="None"?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-left:3px solid #EF4444;border-radius:6px;padding:7px 9px;font-size:10px"><b style="color:#991B1B">🏥 Medical</b><br><span style="color:#1C1C1E">${player.injuries}</span></div>`:""}
+  </div>
+
+  <!-- CENTER: PHOTO -->
+  <div class="photo-col">
+    ${photoSection}
+    <div class="photo-caption">📏 ${m.height}cm · ⚖️ ${m.weight}kg<br>${m.date||date}</div>
+  </div>
+
+  <!-- RIGHT CALLOUTS -->
+  <div class="callouts">
+    <div class="callout green">
+      <div class="cl">Lean Muscle Mass</div>
+      <div class="cv" style="color:#10B981">${lean}kg</div>
+      <div class="cs">Target: ${player.targetBodyFat&&player.targetWeight?leanMass(+player.targetWeight,+player.targetBodyFat)+"kg":"—"}</div>
+    </div>
+    <div class="callout gold">
+      <div class="cl">Protein Target</div>
+      <div class="cv" style="color:#D4840A">${protein}g/day</div>
+      <div class="cs">${(player.nutritionGoal==="Lose body fat"?"2.4":"2.0")}g/kg bodyweight</div>
+    </div>
+    <div class="callout teal">
+      <div class="cl">Hydration</div>
+      <div class="cv" style="color:#06B6D4">${isHL?"4–5":"3–4"}L/day</div>
+      <div class="cs">Qatar heat essential</div>
+    </div>
+    <div class="callout" style="border-left:3px solid #F59E0B">
+      <div class="cl">Target Weight</div>
+      <div class="cv" style="color:#F59E0B">${tW}</div>
+      <div class="cs">Current: ${m.weight}kg</div>
+    </div>
+    <div class="callout" style="border-left:3px solid #64748B">
+      <div class="cl">Training</div>
+      <div class="cv" style="color:#64748B;font-size:13px">${player.trainingTime||"16:00"}</div>
+      <div class="cs">${player.trainingLoad} Load · ${player.position}</div>
+    </div>
+    <div class="callout" style="border-left:3px solid #6366F1">
+      <div class="cl">Nutrition Goal</div>
+      <div class="cv" style="color:#6366F1;font-size:12px">${player.nutritionGoal}</div>
     </div>
   </div>
 
-  <!-- PLAYER INFO -->
-  <div class="player-bar">
-    <div style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-family:Rajdhani,sans-serif;font-weight:700;font-size:18px;flex-shrink:0;">${player.name.split(" ").slice(0,2).map(w=>w[0]).join("")}</div>
-    <div style="flex:1">
-      <div class="player-name">${player.name} &nbsp;♂</div>
-      <div class="player-meta">${player.position} · ${player.nationality} · Age ${age} · #${player.number} · Training: ${player.trainingTime||"16:00"}</div>
-    </div>
-    <div class="player-badge">${player.trainingLoad} Training</div>
-    <div class="player-badge">${player.nutritionGoal}</div>
-  </div>
+</div>
 
-  <!-- BODY FIGURE + CALLOUTS -->
-  <div class="main-grid">
+<!-- STATS ROW -->
+<div class="stats-row">
+  <div class="stat-box"><div class="sl">Weight</div><div class="sv">${m.weight}<span style="font-size:10px;font-weight:400">kg</span></div><div class="ss">→ ${tW}</div></div>
+  <div class="stat-box g"><div class="sl">Lean Mass</div><div class="sv">${lean}<span style="font-size:10px;font-weight:400">kg</span></div><div class="ss">Fat: ${fatM}kg</div></div>
+  <div class="stat-box b"><div class="sl">Body Fat</div><div class="sv">${m.bodyFat}<span style="font-size:10px;font-weight:400">%</span></div><div class="ss" style="color:${bfs.c}">${bfs.l}</div></div>
+  <div class="stat-box y"><div class="sl">BMI</div><div class="sv">${bmi}</div><div class="ss">FFMI: ${ffmi}</div></div>
+  <div class="stat-box p"><div class="sl">Height</div><div class="sv">${m.height}<span style="font-size:10px;font-weight:400">cm</span></div><div class="ss">Age: ${age}y</div></div>
+  <div class="stat-box t"><div class="sl">Hydration</div><div class="sv">${isHL?"4–5":"3–4"}<span style="font-size:10px;font-weight:400">L</span></div><div class="ss">Per day</div></div>
+</div>
 
-    <!-- LEFT CALLOUTS (current data) -->
-    <div class="callout-col callout-left">
-
-      <div class="callout-box" style="border-right-color:#EF4444">
-        <div class="cl">Body Fat %</div>
-        <div class="cv" style="color:#EF4444">${m.bodyFat}%</div>
-        <div class="ct">Status: ${bfs.l}</div>
-        <div style="display:flex;justify-content:flex-end;margin-top:4px">
-          <span style="background:${bfs.c}20;color:${bfs.c};padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">Target: ${tBF}</span>
-        </div>
-      </div>
-
-      <div class="callout-box" style="border-right-color:#8B5CF6">
-        <div class="cl">Fat Mass</div>
-        <div class="cv" style="color:#8B5CF6">${fatM}kg</div>
-        <div class="ct">To lose: ${player.targetBodyFat ? (fatM - fatMass(player.targetWeight||m.weight,+player.targetBodyFat)).toFixed(1)+"kg" : "—"}</div>
-      </div>
-
-      <div class="callout-box" style="border-right-color:#F59E0B">
-        <div class="cl">BMI</div>
-        <div class="cv" style="color:#F59E0B">${bmi}</div>
-        <div style="font-size:9px;color:#6E6E73;margin-top:2px">Normal: 18.5–24.9</div>
-      </div>
-
-      <div class="callout-box" style="border-right-color:#DC143C">
-        <div class="cl">Current Weight</div>
-        <div class="cv" style="color:#DC143C">${m.weight}kg</div>
-        <div class="cg">Target: ${tW}</div>
-      </div>
-
-      <div class="callout-box" style="border-right-color:#06B6D4">
-        <div class="cl">Height</div>
-        <div class="cv" style="color:#06B6D4">${m.height}cm</div>
-        <div style="font-size:9px;color:#6E6E73;margin-top:2px">Last measured: ${m.date}</div>
-      </div>
-
-    </div>
-
-    <!-- BODY SVG FIGURE -->
-    <div class="body-figure">
-      <svg class="body" viewBox="0 0 160 340" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Shadow -->
-        <ellipse cx="80" cy="334" rx="42" ry="6" fill="rgba(0,0,0,0.08)"/>
-        <!-- Head -->
-        <circle cx="80" cy="36" r="28" fill="#E8D5C4" stroke="#C4A882" stroke-width="1.5"/>
-        <!-- Hair -->
-        <ellipse cx="80" cy="11" rx="28" ry="12" fill="#5D4037"/>
-        <rect x="52" y="8" width="56" height="14" rx="7" fill="#5D4037"/>
-        <!-- Face features -->
-        <ellipse cx="70" cy="33" rx="4" ry="5" fill="white"/>
-        <ellipse cx="90" cy="33" rx="4" ry="5" fill="white"/>
-        <circle cx="70" cy="34" r="2.5" fill="#3E2723"/>
-        <circle cx="90" cy="34" r="2.5" fill="#3E2723"/>
-        <path d="M 72 44 Q 80 49 88 44" stroke="#C4A882" stroke-width="1.5" fill="none"/>
-        <!-- Neck -->
-        <rect x="70" y="62" width="20" height="18" rx="4" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Shoulders -->
-        <path d="M 30 88 Q 55 78 80 80 Q 105 78 130 88 L 128 95 Q 105 86 80 88 Q 55 86 32 95 Z" fill="#DC143C"/>
-        <!-- Jersey/Torso -->
-        <path d="M 32 95 L 28 175 L 132 175 L 128 95 Q 105 86 80 88 Q 55 86 32 95 Z" fill="#DC143C"/>
-        <!-- Jersey number -->
-        <text x="80" y="145" text-anchor="middle" fill="white" font-family="Rajdhani,sans-serif" font-size="22" font-weight="700">${player.number}</text>
-        <!-- Jersey collar -->
-        <path d="M 65 80 Q 80 90 95 80" stroke="white" stroke-width="2" fill="none"/>
-        <!-- Left arm upper -->
-        <path d="M 32 95 L 10 150 Q 8 158 14 162 L 36 115 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Left forearm -->
-        <path d="M 14 162 L 6 210 Q 4 218 10 220 L 20 175 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Left hand -->
-        <ellipse cx="9" cy="223" rx="8" ry="6" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Right arm upper -->
-        <path d="M 128 95 L 150 150 Q 152 158 146 162 L 124 115 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Right forearm -->
-        <path d="M 146 162 L 154 210 Q 156 218 150 220 L 140 175 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Right hand -->
-        <ellipse cx="151" cy="223" rx="8" ry="6" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Shorts -->
-        <path d="M 28 175 L 34 230 L 78 230 L 80 210 L 82 230 L 126 230 L 132 175 Z" fill="#1C1C1E"/>
-        <!-- Left leg upper -->
-        <path d="M 34 230 L 26 300 Q 25 308 34 309 L 46 235 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Right leg upper -->
-        <path d="M 126 230 L 134 300 Q 135 308 126 309 L 114 235 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Left shin -->
-        <path d="M 34 309 L 30 334 L 44 334 L 46 309 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Right shin -->
-        <path d="M 126 309 L 130 334 L 116 334 L 114 309 Z" fill="#E8D5C4" stroke="#C4A882" stroke-width="1"/>
-        <!-- Left shoe -->
-        <path d="M 22 332 Q 20 339 36 339 L 48 339 L 46 333 Z" fill="#1C1C1E"/>
-        <!-- Right shoe -->
-        <path d="M 138 332 Q 140 339 124 339 L 112 339 L 114 333 Z" fill="#1C1C1E"/>
-        <!-- Left sock -->
-        <path d="M 30 322 L 46 322" stroke="#DC143C" stroke-width="3"/>
-        <path d="M 114 322 L 130 322" stroke="#DC143C" stroke-width="3"/>
-        <!-- Measurement lines LEFT -->
-        <line x1="32" y1="95" x2="-5" y2="85" stroke="#EF4444" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="-5" cy="85" r="3" fill="#EF4444"/>
-        <line x1="32" y1="140" x2="-5" y2="140" stroke="#8B5CF6" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="-5" cy="140" r="3" fill="#8B5CF6"/>
-        <line x1="52" y1="175" x2="-5" y2="185" stroke="#F59E0B" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="-5" cy="185" r="3" fill="#F59E0B"/>
-        <line x1="34" y1="215" x2="-5" y2="225" stroke="#DC143C" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="-5" cy="225" r="3" fill="#DC143C"/>
-        <line x1="80" y1="36" x2="-5" y2="36" stroke="#06B6D4" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="-5" cy="36" r="3" fill="#06B6D4"/>
-        <!-- Measurement lines RIGHT -->
-        <line x1="128" y1="95" x2="165" y2="85" stroke="#10B981" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="165" cy="85" r="3" fill="#10B981"/>
-        <line x1="128" y1="135" x2="165" y2="135" stroke="#DC143C" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="165" cy="135" r="3" fill="#DC143C"/>
-        <line x1="128" y1="175" x2="165" y2="175" stroke="#3B82F6" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="165" cy="175" r="3" fill="#3B82F6"/>
-        <line x1="126" y1="215" x2="165" y2="225" stroke="#F59E0B" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="165" cy="225" r="3" fill="#F59E0B"/>
-        <line x1="80" y1="64" x2="165" y2="64" stroke="#6E6E73" stroke-width="1" stroke-dasharray="3,2"/>
-        <circle cx="165" cy="64" r="3" fill="#6E6E73"/>
-      </svg>
-    </div>
-
-    <!-- RIGHT CALLOUTS (targets & goals) -->
-    <div class="callout-col callout-right">
-
-      <div class="callout-box" style="border-left-color:#10B981">
-        <div class="cl">Lean Muscle Mass</div>
-        <div class="cv" style="color:#10B981">${lean}kg</div>
-        <div class="cg">Target: ${tLean}</div>
-      </div>
-
-      <div class="callout-box" style="border-left-color:#DC143C">
-        <div class="cl">Daily Calories (TDEE)</div>
-        <div class="cv" style="color:#DC143C">${tdee} kcal</div>
-        <div style="font-size:9px;color:#6E6E73;margin-top:2px">BMR: ${bmr} kcal</div>
-      </div>
-
-      <div class="callout-box" style="border-left-color:#3B82F6">
-        <div class="cl">FFMI</div>
-        <div class="cv" style="color:#3B82F6">${ffmi}</div>
-        <div style="font-size:9px;color:#6E6E73;margin-top:2px">Target: 20–25 (Elite)</div>
-      </div>
-
-      <div class="callout-box" style="border-left-color:#F59E0B">
-        <div class="cl">Protein Target</div>
-        <div class="cv" style="color:#F59E0B">${protein}g/day</div>
-        <div style="font-size:9px;color:#6E6E73;margin-top:2px">${(player.nutritionGoal==="Lose body fat"?"2.4":"2.0")}g per kg bodyweight</div>
-      </div>
-
-      <div class="callout-box" style="border-left-color:#6E6E73">
-        <div class="cl">Allergies / Injuries</div>
-        <div style="font-size:11px;font-weight:600;color:#1C1C1E;margin-top:2px">${player.allergies||"None"}</div>
-        <div style="font-size:10px;color:#EF4444;margin-top:2px">${player.injuries||"None"}</div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- STATS ROW -->
-  <div class="stats-row">
-    <div class="stat-box red">
-      <div class="stat-label">Weight</div>
-      <div class="stat-val">${m.weight}<span style="font-size:11px;font-weight:400">kg</span></div>
-      <div class="stat-sub">Target: ${tW}</div>
-    </div>
-    <div class="stat-box green">
-      <div class="stat-label">Lean Mass</div>
-      <div class="stat-val">${lean}<span style="font-size:11px;font-weight:400">kg</span></div>
-      <div class="stat-sub">Fat: ${fatM}kg</div>
-    </div>
-    <div class="stat-box blue">
-      <div class="stat-label">Body Fat</div>
-      <div class="stat-val">${m.bodyFat}<span style="font-size:11px;font-weight:400">%</span></div>
-      <div class="stat-sub" style="color:${bfs.c}">${bfs.l}</div>
-    </div>
-    <div class="stat-box gold">
-      <div class="stat-label">BMI</div>
-      <div class="stat-val">${bmi}</div>
-      <div class="stat-sub">FFMI: ${ffmi}</div>
-    </div>
-    <div class="stat-box purple">
-      <div class="stat-label">Height</div>
-      <div class="stat-val">${m.height}<span style="font-size:11px;font-weight:400">cm</span></div>
-      <div class="stat-sub">Age: ${age} yrs</div>
-    </div>
-    <div class="stat-box teal">
-      <div class="stat-label">Hydration</div>
-      <div class="stat-val">${["High","Very High"].includes(player.trainingLoad)?"4–5":"3–4"}<span style="font-size:11px;font-weight:400">L</span></div>
-      <div class="stat-sub">Per day</div>
-    </div>
-  </div>
-
-  <!-- NUTRITION TARGETS -->
+<!-- NUTRITION -->
+<div class="sec">
+  <div class="sec-title">📊 Daily Nutrition Targets</div>
   <div class="nutri-row">
-    <div class="nutri-box calories">
-      <div class="nutri-label">Daily Target</div>
-      <div class="nutri-val">${tdee}</div>
-      <div class="nutri-sub">kcal/day</div>
+    <div class="nc cal"><div class="nl">Daily Target</div><div class="nv">${tdee}</div><div style="font-size:9px;opacity:.75">kcal/day</div></div>
+    <div class="nc pro"><div class="nl" style="color:#065f46">Protein</div><div class="nv" style="color:#10B981">${protein}g</div><div style="font-size:9px;color:#065f46">${protein*4} kcal · ${(protein*4/tdee*100).toFixed(0)}%</div></div>
+    <div class="nc cb"><div class="nl" style="color:#1e40af">Carbohydrates</div><div class="nv" style="color:#3B82F6">${carb}g</div><div style="font-size:9px;color:#1e40af">${carb*4} kcal · ${(carb*4/tdee*100).toFixed(0)}%</div></div>
+    <div class="nc ft"><div class="nl" style="color:#854d0e">Fats</div><div class="nv" style="color:#D4840A">${fat}g</div><div style="font-size:9px;color:#854d0e">${fat*9} kcal · ${(fat*9/tdee*100).toFixed(0)}%</div></div>
+  </div>
+</div>
+
+${gp?.bodyFat||gp?.weight?`
+<!-- GOALS -->
+<div class="sec">
+  <div class="sec-title">🎯 Goal Progress</div>
+  ${gp?.bodyFat?`<div class="goal-row"><div><div style="font-size:11px;font-weight:600">Body Fat: ${gp.bodyFat.current}% → ${gp.bodyFat.target}%</div><div style="font-size:10px;color:#888">Est. ${gp.bodyFat.weeksLeft} weeks</div></div><div class="goal-bar"><div class="goal-fill" style="width:${gp.bodyFat.progress}%;background:linear-gradient(90deg,#10B981,#3B82F6)"></div></div><div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:#10B981;text-align:right">${gp.bodyFat.progress}%</div></div>`:""}
+  ${gp?.weight?`<div class="goal-row"><div><div style="font-size:11px;font-weight:600">Weight: ${gp.weight.current}kg → ${gp.weight.target}kg</div><div style="font-size:10px;color:#888">Est. ${gp.weight.weeksLeft} weeks</div></div><div class="goal-bar"><div class="goal-fill" style="width:${gp.weight.progress}%;background:linear-gradient(90deg,#3B82F6,#8B5CF6)"></div></div><div style="font-family:Rajdhani,sans-serif;font-size:14px;font-weight:700;color:#3B82F6;text-align:right">${gp.weight.progress}%</div></div>`:""}
+</div>`:""}
+
+<!-- MEAL PLAN -->
+<div class="sec">
+  <div class="sec-title">🍽️ Training Day Meal Plan — Training at ${player.trainingTime||"16:00"}</div>
+  <table class="meal">
+    <thead><tr style="background:#F8F8FA"><th style="padding:6px 10px;text-align:left;font-size:10px;color:#888;font-weight:600">TIME</th><th style="padding:6px 10px;text-align:left;font-size:10px;color:#888;font-weight:600">MEAL</th><th style="padding:6px 10px;text-align:left;font-size:10px;color:#888;font-weight:600">RECOMMENDED FOODS</th></tr></thead>
+    <tbody>${mealsHTML}</tbody>
+  </table>
+  <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="background:#FFFBE8;border:1px solid #FDE68A;border-radius:6px;padding:8px 10px">
+      <div style="font-size:10px;font-weight:700;color:#D4840A;margin-bottom:3px">💪 Pre-Training (${player.nationality})</div>
+      <div style="font-size:11px">${nf.pre}</div>
     </div>
-    <div class="nutri-box protein">
-      <div class="nutri-label" style="color:#065f46">Protein</div>
-      <div class="nutri-val" style="color:#10B981">${protein}g</div>
-      <div class="nutri-sub" style="color:#065f46">${protein*4} kcal · ${(protein*4/tdee*100).toFixed(0)}%</div>
-    </div>
-    <div class="nutri-box carbs">
-      <div class="nutri-label" style="color:#1e40af">Carbohydrates</div>
-      <div class="nutri-val" style="color:#3B82F6">${carb}g</div>
-      <div class="nutri-sub" style="color:#1e40af">${carb*4} kcal · ${(carb*4/tdee*100).toFixed(0)}%</div>
-    </div>
-    <div class="nutri-box fats">
-      <div class="nutri-label" style="color:#854d0e">Fats</div>
-      <div class="nutri-val" style="color:#D4840A">${fat}g</div>
-      <div class="nutri-sub" style="color:#854d0e">${fat*9} kcal · ${(fat*9/tdee*100).toFixed(0)}%</div>
+    <div style="background:#E8F8F0;border:1px solid #A8E6C8;border-radius:6px;padding:8px 10px">
+      <div style="font-size:10px;font-weight:700;color:#10B981;margin-bottom:3px">🔄 Post-Training (${player.nationality})</div>
+      <div style="font-size:11px">${nf.post}</div>
     </div>
   </div>
+</div>
 
-  <!-- GOAL PROGRESS -->
-  ${(gp?.bodyFat || gp?.weight) ? `
-  <div class="goals-section">
-    <div class="goals-title">🎯 Goal Progress</div>
-    ${gp?.bodyFat ? `
-    <div class="goal-row">
-      <div>
-        <div class="goal-label">Body Fat: ${gp.bodyFat.current}% → ${gp.bodyFat.target}%</div>
-        <div style="font-size:9px;color:#8E8E93">Est. ${gp.bodyFat.weeksLeft} weeks</div>
-      </div>
-      <div>
-        <div class="goal-bar-bg"><div class="goal-bar-fill" style="width:${gp.bodyFat.progress}%;background:linear-gradient(90deg,#10B981,#3B82F6)"></div></div>
-      </div>
-      <div class="goal-pct" style="color:#10B981">${gp.bodyFat.progress}%</div>
-    </div>` : ""}
-    ${gp?.weight ? `
-    <div class="goal-row">
-      <div>
-        <div class="goal-label">Weight: ${gp.weight.current}kg → ${gp.weight.target}kg</div>
-        <div style="font-size:9px;color:#8E8E93">Est. ${gp.weight.weeksLeft} weeks</div>
-      </div>
-      <div>
-        <div class="goal-bar-bg"><div class="goal-bar-fill" style="width:${gp.weight.progress}%;background:linear-gradient(90deg,#3B82F6,#8B5CF6)"></div></div>
-      </div>
-      <div class="goal-pct" style="color:#3B82F6">${gp.weight.progress}%</div>
-    </div>` : ""}
-  </div>` : ""}
-
-  <!-- FOOTER -->
-  <div class="footer">
-    <div class="footer-left">
-      <div>Al Duhail Sports Club · Nutrition Management System v3.0</div>
-      <div style="margin-top:2px">Formula: Mifflin-St Jeor (Male) + ISSN Macros + Qatar Heat ×1.07 · Confidential — For Club Use Only</div>
-    </div>
-    <div class="footer-right">🏆 #${player.number} · ${player.name}</div>
+<!-- POSITION TIPS -->
+<div class="sec">
+  <div class="sec-title">📍 Position-Specific Nutrition Tips — ${player.position}</div>
+  <div>
+    ${tips.map(t=>`<div class="tip-item"><span style="color:#DC143C;font-weight:700;flex-shrink:0">•</span>${t}</div>`).join('')}
   </div>
+</div>
+
+<!-- SUPPLEMENTS -->
+<div class="sec">
+  <div class="sec-title">💊 Active Supplement Plan</div>
+  ${supplHTML}
+</div>
+
+<!-- NUTRITIONIST NOTES -->
+${player.nutritionistNotes?`
+<div class="sec">
+  <div class="sec-title">📝 Nutritionist Notes & Recommendations</div>
+  <div class="notes-box">${player.nutritionistNotes}</div>
+</div>`:""}
+
+<!-- FOOTER -->
+<div class="footer">
+  <div>Al Duhail SC Nutrition Management System v3.0 · Mifflin-St Jeor (Male) + ISSN Macros + Qatar Heat ×1.07 · Confidential — For Club Use Only</div>
+  <div style="color:#DC143C;font-weight:700">#${player.number} · ${player.name}</div>
+</div>
 
 </div>
 
 <script>
-async function downloadAsPNG() {
-  try {
-    const el = document.getElementById('report-page');
-    // Use html2canvas if available, otherwise guide user
-    if (typeof html2canvas !== 'undefined') {
-      const canvas = await html2canvas(el, {scale:2, useCORS:true, backgroundColor:'#fff'});
-      const link = document.createElement('a');
-      link.download = 'DuhailReport_${player.name.replace(/\\s+/g,'_')}.png';
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    } else {
-      alert('To save as image:\\n1. Right-click on the report\\n2. Choose "Print"\\n3. Select "Save as PDF" as the printer\\n\\nOr use Print button above and choose PDF.');
-    }
-  } catch(e) {
-    window.print();
-  }
+async function saveImg(){
+  alert('لحفظ كصورة:\\n1. اضغط Print\\n2. اختر "Save as PDF" أو "Microsoft Print to PDF"\\nأو استخدم Ctrl+P ثم Save as PDF');
 }
 </script>
 </body>
@@ -694,6 +626,252 @@ const Tgl=({on,onChange})=><button className="tgl" onClick={()=>onChange(!on)} s
 const Av=({p,sz=40,fs="1rem"})=>p?.photo?<img src={p.photo} style={{width:sz,height:sz,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>:<div className="av" style={{width:sz,height:sz,background:getAV(p?.id),fontSize:fs,boxShadow:sz>50?`0 0 20px ${getAV(p?.id)}50`:undefined}}>{ini(p?.name||"P")}</div>;
 const Dlt=({v,u="",inv=false})=>{if(!v&&v!==0)return null;if(v===0)return <span style={{color:"var(--mt)",fontSize:".77rem"}}>—</span>;const g=inv?v<0:v>0;const c=g?"#10B981":"#EF4444";const I=v>0?TrendingUp:TrendingDown;return <span style={{display:"inline-flex",alignItems:"center",gap:3,background:`${c}18`,color:c,padding:"2px 8px",borderRadius:20,fontSize:".78rem",fontWeight:700}}><I size={11}/>{v>0?"+":""}{v}{u}</span>;};
 
+
+// ── FULL SQUAD REPORT (ALL PLAYERS) ──────────────────────────
+const genFullSquadReport = (players) => {
+  const date = new Date().toLocaleDateString('en-GB');
+  const avgW = players.length ? +(players.reduce((s,p)=>s+getLast(p).weight,0)/players.length).toFixed(1) : 0;
+  const avgBF = players.length ? +(players.reduce((s,p)=>s+getLast(p).bodyFat,0)/players.length).toFixed(1) : 0;
+  const avgLean = players.length ? +(players.reduce((s,p)=>s+leanMass(getLast(p).weight,getLast(p).bodyFat),0)/players.length).toFixed(1) : 0;
+  const fu = players.filter(needsFU);
+
+  const css = `
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=DM+Sans:wght@400;500;600&display=swap');
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:'DM Sans',sans-serif;background:#fff;color:#1C1C1E;font-size:12px;}
+    .page{width:210mm;margin:0 auto;padding:12mm;background:#fff;}
+    h1,h2,.hd{font-family:'Rajdhani',sans-serif;}
+    /* COVER */
+    .cover{min-height:120mm;display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px solid #DC143C;border-radius:12px;padding:24px;margin-bottom:16px;text-align:center;}
+    .cover img{width:80px;height:80px;object-fit:contain;margin-bottom:12px;}
+    .cover h1{font-size:28px;font-weight:700;color:#DC143C;margin-bottom:4px;}
+    .cover-sub{font-size:12px;color:#6E6E73;letter-spacing:2px;margin-bottom:12px;}
+    /* SUMMARY ROW */
+    .sum-row{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px;}
+    .sum-box{background:#F8F8FA;border-radius:8px;padding:10px;text-align:center;border-top:2px solid #DC143C;}
+    .sum-box.g{border-top-color:#10B981;}
+    .sum-box.b{border-top-color:#3B82F6;}
+    .sum-box.y{border-top-color:#D4840A;}
+    .sum-box.r{border-top-color:#EF4444;}
+    .sl{font-size:9px;color:#6E6E73;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
+    .sv{font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;}
+    /* SQUAD TABLE */
+    .sec-title{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;color:#DC143C;border-bottom:2px solid #DC143C;padding-bottom:4px;margin-bottom:10px;}
+    table.sq{width:100%;border-collapse:collapse;margin-bottom:16px;}
+    table.sq th{background:#DC143C;color:#fff;padding:6px 8px;text-align:left;font-size:10px;font-weight:600;white-space:nowrap;}
+    table.sq td{padding:6px 8px;border-bottom:1px solid #F2F2F7;font-size:11px;vertical-align:middle;}
+    table.sq tr:nth-child(even){background:#FAFAFA;}
+    .bdg{display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;}
+    .bar-bg{width:60px;height:6px;background:#E5E5EA;border-radius:3px;overflow:hidden;display:inline-block;}
+    .bar-fill{height:100%;border-radius:3px;}
+    /* PLAYER CARDS */
+    .player-card{border:1px solid #E5E5EA;border-radius:10px;padding:12px;margin-bottom:12px;break-inside:avoid;page-break-inside:avoid;}
+    .pc-header{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #DC143C;}
+    .pc-num{width:36px;height:36px;border-radius:50%;background:#DC143C;color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:16px;flex-shrink:0;}
+    .pc-name{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;}
+    .pc-meta{font-size:10px;color:#6E6E73;margin-top:1px;}
+    .pc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
+    .pc-box{background:#F8F8FA;border-radius:6px;padding:6px 8px;}
+    .pc-label{font-size:8px;color:#6E6E73;text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px;}
+    .pc-val{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;}
+    .nutri-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
+    .ng{border-radius:6px;padding:6px 8px;text-align:center;}
+    .ng.cal{background:linear-gradient(135deg,#DC143C,#8B0000);color:#fff;}
+    .ng.pro{background:#E8F8F0;border:1px solid #BBF7D0;}
+    .ng.cb{background:#EBF3FF;border:1px solid #BFDBFE;}
+    .ng.ft{background:#FFFBE8;border:1px solid #FDE68A;}
+    .ng-l{font-size:8px;opacity:.75;text-transform:uppercase;}
+    .ng-v{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;}
+    .goal-bar{height:7px;background:#F2F2F7;border-radius:4px;overflow:hidden;flex:1;}
+    .goal-fill{height:100%;border-radius:4px;}
+    /* FOLLOW UP */
+    .fu-box{background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;padding:10px;margin-bottom:14px;}
+    /* FOOTER */
+    .footer{margin-top:12px;padding-top:8px;border-top:1px solid #E5E5EA;display:flex;justify-content:space-between;font-size:9px;color:#8E8E93;}
+    @media print{
+      .no-print{display:none!important;}
+      .player-card{page-break-inside:avoid;}
+      @page{size:A4;margin:8mm;}
+    }
+  `;
+
+  // Summary table rows
+  const tableRows = players.map(p => {
+    const m = getLast(p);
+    const age = calcAge(p.dob);
+    const { tdee } = calcTDEE(m.weight, m.height, age, p.trainingLoad, p.nutritionGoal);
+    const lean = leanMass(m.weight, m.bodyFat);
+    const bfs = bfSt(m.bodyFat);
+    const gp = calcGoal(p);
+    const bfColor = bfs.c;
+    const status = needsFU(p) ? '<span class="bdg" style="background:#FEE2E2;color:#EF4444">⚠ Follow-up</span>' : '<span class="bdg" style="background:#D1FAE5;color:#065f46">✓ Normal</span>';
+    const goalBar = gp?.bodyFat ? `<div style="display:flex;align-items:center;gap:4px"><div class="bar-bg"><div class="bar-fill" style="width:${gp.bodyFat.progress}%;background:#10B981"></div></div><span style="font-size:10px;color:#10B981">${gp.bodyFat.progress}%</span></div>` : '—';
+    return `<tr>
+      <td><b style="color:#DC143C;font-family:Rajdhani,sans-serif">#${p.number}</b></td>
+      <td><b>${p.name}</b><br><span style="color:#6E6E73;font-size:10px">${p.position}</span></td>
+      <td>${age}</td>
+      <td>${p.nationality}</td>
+      <td><b>${m.weight}kg</b></td>
+      <td>${m.height}cm</td>
+      <td><span class="bdg" style="background:${bfColor}20;color:${bfColor}">${m.bodyFat}% ${bfs.l}</span></td>
+      <td><b style="color:#10B981">${lean}kg</b></td>
+      <td>${bmiV(m.weight,m.height)}</td>
+      <td><b style="color:#D4840A">${ffmiV(m.weight,m.height,m.bodyFat)}</b></td>
+      <td>${tdee} kcal</td>
+      <td>${goalBar}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('');
+
+  // Individual player cards
+  const playerCards = players.map(p => {
+    const m = getLast(p);
+    const age = calcAge(p.dob);
+    const { bmr, tdee } = calcTDEE(m.weight, m.height, age, p.trainingLoad, p.nutritionGoal);
+    const { protein, fat, carb } = calcMacros(tdee, m.weight, p.nutritionGoal);
+    const lean = leanMass(m.weight, m.bodyFat);
+    const fatM = fatMass(m.weight, m.bodyFat);
+    const bfs = bfSt(m.bodyFat);
+    const gp = calcGoal(p);
+    const actSupps = (p.supplements||[]).filter(s=>s.enabled);
+    const fuFlag = needsFU(p) ? `<span style="background:#FEE2E2;color:#EF4444;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin-left:8px">⚠ Follow-up</span>` : '';
+
+    const histRows = [...(p.measurements||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5).map(ms =>
+      `<tr><td>${ms.date}</td><td><b>${ms.weight}kg</b></td><td><span class="bdg" style="background:${bfSt(ms.bodyFat).c}20;color:${bfSt(ms.bodyFat).c}">${ms.bodyFat}%</span></td><td>${leanMass(ms.weight,ms.bodyFat)}kg</td><td>${bmiV(ms.weight,ms.height)}</td><td style="color:#6E6E73">${ms.notes||'—'}</td></tr>`
+    ).join('');
+
+    return `
+    <div class="player-card">
+      <div class="pc-header">
+        <div class="pc-num">${p.number}</div>
+        <div style="flex:1">
+          <div class="pc-name">${p.name} ♂ ${fuFlag}</div>
+          <div class="pc-meta">${p.position} · ${p.nationality} · Age ${age} · ${p.trainingLoad} Load · ${p.nutritionGoal}</div>
+        </div>
+        ${p.photo?`<img src="${p.photo}" style="width:50px;height:50px;border-radius:50%;object-fit:cover;border:2px solid #DC143C"/>`:
+        `<div style="width:50px;height:50px;border-radius:50%;background:#DC143C;color:#fff;display:flex;align-items:center;justify-content:center;font-family:Rajdhani,sans-serif;font-weight:700;font-size:18px">${p.name.split(' ').slice(0,2).map(w=>w[0]).join('')}</div>`}
+      </div>
+
+      <div class="pc-grid">
+        <div class="pc-box"><div class="pc-label">Weight</div><div class="pc-val">${m.weight}kg</div></div>
+        <div class="pc-box"><div class="pc-label">Body Fat</div><div class="pc-val" style="color:${bfs.c}">${m.bodyFat}% <span style="font-size:9px">${bfs.l}</span></div></div>
+        <div class="pc-box"><div class="pc-label">Lean Mass</div><div class="pc-val" style="color:#10B981">${lean}kg</div></div>
+        <div class="pc-box"><div class="pc-label">Fat Mass</div><div class="pc-val" style="color:#EF4444">${fatM}kg</div></div>
+        <div class="pc-box"><div class="pc-label">Height</div><div class="pc-val">${m.height}cm</div></div>
+        <div class="pc-box"><div class="pc-label">BMI</div><div class="pc-val">${bmiV(m.weight,m.height)}</div></div>
+        <div class="pc-box"><div class="pc-label">FFMI</div><div class="pc-val" style="color:#D4840A">${ffmiV(m.weight,m.height,m.bodyFat)}</div></div>
+        <div class="pc-box"><div class="pc-label">BMR</div><div class="pc-val" style="color:#6E6E73">${bmr}</div></div>
+      </div>
+
+      <div class="nutri-grid">
+        <div class="ng cal"><div class="ng-l">TDEE</div><div class="ng-v">${tdee} kcal</div></div>
+        <div class="ng pro"><div class="ng-l" style="color:#065f46">Protein</div><div class="ng-v" style="color:#10B981">${protein}g</div></div>
+        <div class="ng cb"><div class="ng-l" style="color:#1e40af">Carbs</div><div class="ng-v" style="color:#3B82F6">${carb}g</div></div>
+        <div class="ng ft"><div class="ng-l" style="color:#854d0e">Fats</div><div class="ng-v" style="color:#D4840A">${fat}g</div></div>
+      </div>
+
+      ${gp?.bodyFat||gp?.weight?`<div style="margin-bottom:8px">
+        ${gp?.bodyFat?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:10px;min-width:160px">BF: ${gp.bodyFat.current}% → ${gp.bodyFat.target}%</span><div class="goal-bar"><div class="goal-fill" style="width:${gp.bodyFat.progress}%;background:linear-gradient(90deg,#10B981,#3B82F6)"></div></div><span style="font-size:10px;color:#10B981;min-width:35px">${gp.bodyFat.progress}%</span></div>`:''}
+        ${gp?.weight?`<div style="display:flex;align-items:center;gap:8px"><span style="font-size:10px;min-width:160px">Weight: ${gp.weight.current}kg → ${gp.weight.target}kg</span><div class="goal-bar"><div class="goal-fill" style="width:${gp.weight.progress}%;background:linear-gradient(90deg,#3B82F6,#8B5CF6)"></div></div><span style="font-size:10px;color:#3B82F6;min-width:35px">${gp.weight.progress}%</span></div>`:''}
+      </div>`:''}
+
+      ${p.nutritionistNotes?`<div style="background:#FFFBE8;border-left:3px solid #D4840A;padding:7px 10px;border-radius:0 6px 6px 0;margin-bottom:8px;font-size:11px;line-height:1.6"><b style="color:#D4840A;display:block;margin-bottom:3px">📝 Nutritionist Notes:</b>${p.nutritionistNotes}</div>`:''}
+
+      ${(p.allergies&&p.allergies!=='None')||(p.injuries&&p.injuries!=='None')?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        ${p.allergies&&p.allergies!=='None'?`<div style="background:#FEF9C3;border:1px solid #FDE047;border-radius:6px;padding:6px 9px;font-size:10px"><b style="color:#854D0E">⚠ Allergies:</b> ${p.allergies}</div>`:''}
+        ${p.injuries&&p.injuries!=='None'?`<div style="background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:6px 9px;font-size:10px"><b style="color:#991B1B">🏥 Medical:</b> ${p.injuries}</div>`:''}
+      </div>`:''}
+
+      ${actSupps.length>0?`<div style="margin-bottom:8px"><b style="font-size:10px;color:#6E6E73;display:block;margin-bottom:4px">💊 SUPPLEMENTS:</b><div style="display:flex;flex-wrap:wrap;gap:4px">${actSupps.map(s=>{const cat=SUPPS.find(x=>x.key===s.key);return`<span style="background:#F3F0FF;border:1px solid #C4B5FD;border-radius:12px;padding:2px 8px;font-size:10px">${cat?.emoji||''} ${cat?.label||s.key} · ${s.dose}</span>`;}).join('')}</div></div>`:''}
+
+      ${histRows?`<table class="sq" style="font-size:10px">
+        <thead><tr><th>Date</th><th>Weight</th><th>BF%</th><th>Lean</th><th>BMI</th><th>Notes</th></tr></thead>
+        <tbody>${histRows}</tbody>
+      </table>`:''}
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Al Duhail SC — Full Squad Report</title>
+<style>${css}</style>
+</head>
+<body>
+<div class="no-print" style="background:#1C1C1E;padding:10px 18px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap">
+  <span style="color:#fff;font-size:13px;font-weight:600">📋 Full Squad Report — ${players.length} Players</span>
+  <button onclick="window.print()" style="background:#DC143C;color:#fff;border:none;padding:9px 20px;border-radius:8px;cursor:pointer;font-weight:700">🖨️ Print / Save PDF</button>
+  <button onclick="window.close()" style="background:#6E6E73;color:#fff;border:none;padding:9px 14px;border-radius:8px;cursor:pointer">✕ Close</button>
+</div>
+
+<div class="page">
+
+  <!-- COVER -->
+  <div class="cover">
+    <img src="data:image/jpeg;base64,${LOGO}" alt="Al Duhail SC"/>
+    <h1>AL DUHAIL SC</h1>
+    <div class="cover-sub">NUTRITION MANAGEMENT SYSTEM</div>
+    <div style="font-family:Rajdhani,sans-serif;font-size:22px;font-weight:700;color:#1C1C1E;margin-bottom:4px">FULL SQUAD REPORT</div>
+    <div style="font-size:12px;color:#6E6E73">${date} · ${players.length} Players · All Male ♂</div>
+    <div style="font-size:11px;color:#6E6E73;margin-top:4px">Mifflin-St Jeor (Male) + Qatar Heat ×1.07 + ISSN Macros</div>
+  </div>
+
+  <!-- SUMMARY -->
+  <div class="sum-row">
+    <div class="sum-box"><div class="sl">Total Players</div><div class="sv">${players.length}</div></div>
+    <div class="sum-box g"><div class="sl">Avg Weight</div><div class="sv">${avgW}kg</div></div>
+    <div class="sum-box b"><div class="sl">Avg Body Fat</div><div class="sv">${avgBF}%</div></div>
+    <div class="sum-box y"><div class="sl">Avg Lean Mass</div><div class="sv">${avgLean}kg</div></div>
+    <div class="sum-box r"><div class="sl">Follow-up Needed</div><div class="sv" style="color:#EF4444">${fu.length}</div></div>
+  </div>
+
+  ${fu.length>0?`<div class="fu-box">
+    <b style="color:#EF4444;font-size:12px">⚠ Players Requiring Follow-up (${fu.length}):</b>
+    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+      ${fu.map(p=>`<span style="background:#FEE2E2;color:#991B1B;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600">#${p.number} ${p.name}</span>`).join('')}
+    </div>
+  </div>`:''}
+
+  <!-- SQUAD TABLE -->
+  <div class="sec-title">📊 Squad Overview</div>
+  <table class="sq">
+    <thead><tr>
+      <th>#</th><th>Player</th><th>Age</th><th>Nationality</th>
+      <th>Weight</th><th>Height</th><th>Body Fat</th><th>Lean Mass</th>
+      <th>BMI</th><th>FFMI</th><th>TDEE</th><th>Goal</th><th>Status</th>
+    </tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+
+  <!-- INDIVIDUAL CARDS -->
+  <div class="sec-title">👤 Individual Player Reports</div>
+  ${playerCards}
+
+  <div class="footer">
+    <div>Al Duhail SC Nutrition Management System v3.0 · Confidential — For Club Use Only</div>
+    <div style="color:#DC143C;font-weight:700">Generated: ${date}</div>
+  </div>
+
+</div>
+</body>
+</html>`;
+};
+
+const openFullSquadReport = (players) => {
+  if(!players.length){alert("No players to export.");return;}
+  const html = genFullSquadReport(players);
+  const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url,'_blank');
+  if(!w){
+    const a=document.createElement('a');
+    a.href=url;a.download='DuhailSC_FullSquadReport.html';
+    document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(url);document.body.removeChild(a);},1000);
+  }
+};
+
 const ShareMod=({onClose,onPrint,onWA,onMail,onCopy,onNative,cp})=>{
   const hasNative=canNativeShare();
   const items=hasNative
@@ -773,6 +951,7 @@ const Login=({onLogin,extra,onSignUp,onUpdatePassword})=>{
     setTimeout(()=>{setTab("login");setOk(false);setUname(su.username);setUpass(su.password);},1400);
   };
   return(
+    <>
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(160deg,#F8F8FA 0%,#FFFFFF 50%,#F0F0F5 100%)"}}>
       <div style={{background:"radial-gradient(circle at 30% 30%,rgba(220,20,60,0.05) 0%,transparent 50%)",position:"fixed",inset:0,pointerEvents:"none"}}/>
       <div className="fi" style={{width:"100%",maxWidth:400,padding:"0 18px",position:"relative",zIndex:1}}>
@@ -880,6 +1059,7 @@ const Login=({onLogin,extra,onSignUp,onUpdatePassword})=>{
         </>}
       </div>
     </div>}
+    </>
   );
 };
 
@@ -1147,7 +1327,7 @@ const PP=({player,user,setView,setSel,onAddM})=>{
   return(
     <div className="fi mob-pad" style={{padding:"26px 28px",maxWidth:980}}>
       {ss&&<ShareMod onClose={()=>setSS(false)} onPrint={()=>doSh("print")} onWA={()=>doSh("whatsapp")} onMail={()=>doSh("email")} onCopy={()=>doSh("copy")} onNative={()=>doSh("native")} cp={cp}/>}
-      <BB onClick={()=>setView("pl")}/>
+      {user.role!=="player"&&<BB onClick={()=>setView("pl")}/>}
       <div className="card" style={{padding:22,marginBottom:18,display:"flex",alignItems:"center",gap:18,flexWrap:"wrap"}}>
         <Av p={player} sz={76} fs="1.5rem"/>
         <div style={{flex:1}}>
@@ -1558,7 +1738,10 @@ const Rep=({players})=>{
       {ss&&<ShareMod onClose={()=>setSS(false)} onPrint={()=>doSh("print")} onWA={()=>doSh("whatsapp")} onMail={()=>doSh("email")} onCopy={()=>doSh("copy")} onNative={()=>doSh("native")} cp={cp}/>}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
         <ST ch="Reports" sub="Squad analytics — all male"/>
-        <button className="btn btg" onClick={()=>setSS(true)} style={{display:"flex",alignItems:"center",gap:6,borderColor:"#3B82F6",color:"#3B82F6"}}><Share2 size={14}/>Export Report</button>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn btr" onClick={()=>openFullSquadReport(players)} style={{display:"flex",alignItems:"center",gap:6,background:"linear-gradient(135deg,#1C1C1E,#374151)"}}><FileText size={14}/>Full Squad PDF</button>
+          <button className="btn btg" onClick={()=>setSS(true)} style={{display:"flex",alignItems:"center",gap:6,borderColor:"#3B82F6",color:"#3B82F6"}}><Share2 size={14}/>Export Summary</button>
+        </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:13,marginBottom:20}}>
         {[{l:"Squad",v:players.length,c:"#3B82F6"},{l:"Avg Weight",v:`${avgW}kg`,c:"#DC143C"},{l:"Avg BF%",v:`${avgBf}%`,c:"#F5A623"},{l:"Follow-up",v:fu.length,c:"#EF4444"}].map(({l,v,c})=>(
@@ -1857,6 +2040,9 @@ export default function App(){
   const[view,setView]=useState("dash");
   const[sel,setSel]=useState(null);
 
+  // Track if we've finished the initial load — prevent overwriting Firebase before reading
+  const initialLoadDone = useRef(false);
+
   useEffect(()=>{
     (async()=>{
       try{
@@ -1866,19 +2052,25 @@ export default function App(){
         setExtra(Array.isArray(u)?u:[]);
       }catch(e){setPlayers([]);setExtra([]);}
       setLoaded(true);
+      // Mark initial load done after a tick so effects don't fire prematurely
+      setTimeout(()=>{ initialLoadDone.current = true; }, 100);
     })();
   },[]);
 
   const[saveStatus,setSaveStatus]=useState(null);
 
   useEffect(()=>{
-    if(!loaded)return;
+    if(!loaded || !initialLoadDone.current) return;
     DB.set("duhail_players",players);
     setSaveStatus("saved");
     const t=setTimeout(()=>setSaveStatus(null),2500);
     return()=>clearTimeout(t);
   },[players,loaded]);
-  useEffect(()=>{if(loaded)DB.set("duhail_extra_users",extra);},[extra,loaded]);
+
+  useEffect(()=>{
+    if(!loaded || !initialLoadDone.current) return;
+    DB.set("duhail_extra_users",extra);
+  },[extra,loaded]);
 
   const selP=useMemo(()=>players.find(p=>p.id===sel)||null,[players,sel]);
   const login=u=>{
@@ -1933,7 +2125,10 @@ export default function App(){
   const navView=viewToNav[view]||"dash";
 
   const go=v=>{
-    if(!["cmp","sup","hist","nutr","pp","ep","ap"].includes(v))setSel(null);
+    // Don't clear sel if: player going to "pl" (their home), or nav within player pages
+    const keepSel = ["cmp","sup","hist","nutr","pp","ep","ap"].includes(v)
+      || (user?.role==="player" && v==="pl");
+    if(!keepSel) setSel(null);
     setView(v);
   };
 
@@ -1942,9 +2137,9 @@ export default function App(){
       case "dash":return <Dash players={players} setView={go} setSel={setSel}/>;
       case "pl":
         if(user.role==="player"){
-          // Players see only their own profile
-          const myP=players.find(p=>(user.playerNumber&&p.number===+user.playerNumber)||p.name.toLowerCase()===user.name.toLowerCase());
-          if(myP){setSel(myP.id);return <PP player={myP} user={user} setView={go} setSel={setSel} onAddM={addM}/>;}
+          // Player sees only their own profile - use selP if set, otherwise find by number/name
+          const myP=selP||players.find(p=>(user.playerNumber&&p.number===+user.playerNumber)||p.name.toLowerCase()===user.name.toLowerCase());
+          if(myP) return <PP player={myP} user={user} setView={go} setSel={setSel} onAddM={addM}/>;
           return <div style={{padding:40,textAlign:"center",color:"var(--mt)"}}><p style={{fontSize:"1.2rem",marginBottom:8}}>👤</p><p>Your profile is not linked yet.</p><p style={{fontSize:".83rem",marginTop:8}}>Contact the nutritionist to link your account.</p></div>;
         }
         return <PList players={players} user={user} setView={go} setSel={setSel}/>;
@@ -1954,7 +2149,12 @@ export default function App(){
       case "ep":return selP?<PForm player={selP} onSave={saveP} goPlayers={()=>go("pl")} players={players}/>:null;
       case "sup":return selP?<Sup player={selP} user={user} onSave={saveP} setView={go}/>:<SupNav players={players} setView={go} setSel={setSel}/>;
       case "hist":return selP?<Hist player={selP} setView={go}/>:null;
-      case "nutr":return selP?<Nutr player={selP} setView={go}/>:<PList players={players} user={user} setView={go} setSel={setSel}/>;
+      case "nutr":
+        if(user.role==="player"){
+          const myP2=selP||players.find(p=>(user.playerNumber&&p.number===+user.playerNumber)||p.name.toLowerCase()===user.name.toLowerCase());
+          if(myP2) return <Nutr player={myP2} setView={go}/>;
+        }
+        return selP?<Nutr player={selP} setView={go}/>:<PList players={players} user={user} setView={go} setSel={setSel}/>;
       case "rep":return <Rep players={players}/>;
       case "stg":return <Stg user={user} players={players} extraUsers={extra} onImportPlayers={ps=>{setPlayers(ps);}} onImportUsers={us=>{setExtra(us);}} onUpdateUser={upd=>{if(user.id===1){/* admin - update local */ setUser(upd);}else{setExtra(e=>e.map(u=>u.id===upd.id?upd:u));setUser(upd);}}}/>;
       default:return <Dash players={players} setView={go} setSel={setSel}/>;
